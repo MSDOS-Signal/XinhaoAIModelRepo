@@ -47,37 +47,55 @@ export async function onRequest(context) {
   const path = params.path ? params.path.join('/') : ''
   const url = `${NVIDIA_BASE}/${path}`
 
-  // 只转发必要的请求头,丢弃 Host / CF-* / Content-Length / Accept-Encoding 等
-  // 这些头会导致 NVIDIA API 拒绝请求或编码不匹配
+  // 只转发必要的请求头
   const reqHeaders = {
     'Content-Type': request.headers.get('Content-Type') || 'application/json',
     'Authorization': `Bearer ${apiKey}`,
     'Accept': request.headers.get('Accept') || '*/*',
   }
 
+  // 判断是否为流式请求(SSE)
+  const isSSE = path.includes('chat/completions')
+
   try {
-    // 转发请求
+    // 转发请求,禁用 Cloudflare 缓存以避免 SSE 被缓冲
     const proxyRes = await fetch(url, {
       method: request.method,
       headers: reqHeaders,
       body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
+      cf: { cacheTtl: -1, cacheEverything: false },
     })
 
-    // 构建响应头:复制 NVIDIA 的响应头,但移除会导致问题的头
+    // 构建响应头
     const resHeaders = new Headers(proxyRes.headers)
-    // 移除 Content-Encoding: Workers fetch() 已自动解压 body,
-    // 如果保留此头,浏览器会尝试二次解压导致 "Failed to fetch"
+    // 移除会导致问题的头
     resHeaders.delete('Content-Encoding')
-    // 移除 Content-Length: body 经过 Workers 后长度可能变化
     resHeaders.delete('Content-Length')
-    // 移除 Transfer-Encoding: 让 Workers 自动处理
     resHeaders.delete('Transfer-Encoding')
+
+    // SSE 流式响应:确保不被 CDN/代理缓冲
+    if (isSSE) {
+      resHeaders.set('Content-Type', 'text/event-stream; charset=utf-8')
+      resHeaders.set('Cache-Control', 'no-cache, no-transform')
+      resHeaders.set('X-Accel-Buffering', 'no')
+    }
+
     // 加上 CORS 头
     for (const [k, v] of Object.entries(CORS_HEADERS)) {
       resHeaders.set(k, v)
     }
 
-    // 流式响应直接透传 body
+    // 流式响应:用 TransformStream 确保每个 chunk 立即透传,不被缓冲
+    if (isSSE && proxyRes.body) {
+      const { readable, writable } = new TransformStream()
+      proxyRes.body.pipeTo(writable)
+      return new Response(readable, {
+        status: proxyRes.status,
+        headers: resHeaders,
+      })
+    }
+
+    // 非流式响应直接透传
     return new Response(proxyRes.body, {
       status: proxyRes.status,
       headers: resHeaders,

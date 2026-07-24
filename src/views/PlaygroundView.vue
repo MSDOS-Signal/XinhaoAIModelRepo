@@ -437,17 +437,35 @@ async function send() {
       signal: abortCtrl.signal
     })
 
-    for await (const chunk of gen) {
-      if (waitingFirst.value) waitingFirst.value = false
-      // 直接修改属性,避免每次创建新对象带来的 GC 压力
-      messages.value[aiIdx].content += chunk
+    // 节流更新:缓冲 chunk,每 60ms 刷新一次 UI
+    // 避免每个 token 都触发 Vue 重渲染 + marked 重新解析(O(n²) 问题)
+    let contentBuf = ''
+    let flushTimer = null
+    const flush = () => {
+      flushTimer = null
+      messages.value[aiIdx].content = contentBuf
       scrollToBottom()
     }
 
-    if (!messages.value[aiIdx].content) {
+    for await (const chunk of gen) {
+      if (waitingFirst.value) waitingFirst.value = false
+      contentBuf += chunk
+      if (!flushTimer) {
+        flushTimer = setTimeout(flush, 60)
+      }
+    }
+
+    // 最终刷新:确保所有内容都已渲染
+    if (flushTimer) clearTimeout(flushTimer)
+    messages.value[aiIdx].content = contentBuf
+
+    if (!contentBuf) {
       messages.value[aiIdx] = { ...messages.value[aiIdx], content: '（模型未返回内容）' }
     }
   } catch (err) {
+    // 确保缓冲区内容已写入(可能 flush timer 还在等待)
+    if (flushTimer) clearTimeout(flushTimer)
+    messages.value[aiIdx].content = contentBuf
     const cur = messages.value[aiIdx]
     if (err.name === 'AbortError') {
       messages.value[aiIdx] = { ...cur, content: cur.content + '\n\n_[已停止生成]_' }
