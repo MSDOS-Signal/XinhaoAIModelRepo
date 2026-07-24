@@ -47,40 +47,69 @@ export async function onRequest(context) {
   const path = params.path ? params.path.join('/') : ''
   const url = `${NVIDIA_BASE}/${path}`
 
+  // 读取请求体(POST 时需要转发)
+  let reqBody = null
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    reqBody = await request.text()
+  }
+
   // 只转发必要的请求头
   const reqHeaders = {
-    'Content-Type': request.headers.get('Content-Type') || 'application/json',
+    'Content-Type': 'application/json',
     'Authorization': `Bearer ${apiKey}`,
-    'Accept': request.headers.get('Accept') || '*/*',
+    'Accept': 'text/event-stream' ,
   }
 
   try {
-    // 转发请求 — cache: no-store 确保不缓存流式响应
+    // 转发请求
     const proxyRes = await fetch(url, {
       method: request.method,
       headers: reqHeaders,
-      body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
-      cache: 'no-store',
+      body: reqBody,
     })
 
     // 构建响应头
-    const resHeaders = new Headers(proxyRes.headers)
-    resHeaders.delete('Content-Encoding')
-    resHeaders.delete('Content-Length')
-    resHeaders.delete('Transfer-Encoding')
-
-    // 关键:确保流式响应不被缓冲
+    const resHeaders = new Headers()
+    resHeaders.set('Content-Type', proxyRes.headers.get('Content-Type') || 'text/event-stream; charset=utf-8')
     resHeaders.set('Cache-Control', 'no-cache, no-transform')
+    resHeaders.set('Connection', 'keep-alive')
     resHeaders.set('X-Accel-Buffering', 'no')
-
-    // 加上 CORS 头
     for (const [k, v] of Object.entries(CORS_HEADERS)) {
       resHeaders.set(k, v)
     }
 
-    // 直接透传 body — 不用 TransformStream 包装
-    // Cloudflare Workers 原生支持 ReadableStream 透传,会自动流式推送
-    return new Response(proxyRes.body, {
+    // 如果上游返回错误,直接透传(非流式)
+    if (!proxyRes.ok) {
+      const errText = await proxyRes.text()
+      return new Response(errText, {
+        status: proxyRes.status,
+        headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+      })
+    }
+
+    // 用显式 ReadableStream 强制流式推送
+    // 每收到一个 chunk 立即 enqueue 到下游,不等待完整响应
+    const upstream = proxyRes.body
+    const stream = new ReadableStream({
+      start(controller) {
+        const reader = upstream.getReader()
+        function pump() {
+          reader.read().then(({ done, value }) => {
+            if (done) {
+              controller.close()
+              return
+            }
+            controller.enqueue(value)
+            pump()
+          }).catch((err) => {
+            controller.error(err)
+          })
+        }
+        pump()
+      }
+    })
+
+    return new Response(stream, {
       status: proxyRes.status,
       headers: resHeaders,
     })

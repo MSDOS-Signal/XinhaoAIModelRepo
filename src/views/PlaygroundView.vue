@@ -427,6 +427,16 @@ async function send() {
 
   scrollToBottom()
 
+  // 节流更新:缓冲 chunk,每 30ms 刷新一次 UI
+  // 避免每个 token 都触发 Vue 重渲染 + marked 重新解析(O(n²) 问题)
+  let contentBuf = ''
+  let flushTimer = null
+  const flush = () => {
+    flushTimer = null
+    messages.value[aiIdx].content = contentBuf
+    scrollToBottom()
+  }
+
   try {
     const gen = streamChat({
       model: currentModelId.value,
@@ -436,16 +446,6 @@ async function send() {
       max_tokens: maxTokens.value,
       signal: abortCtrl.signal
     })
-
-    // 节流更新:缓冲 chunk,每 30ms 刷新一次 UI
-    // 避免每个 token 都触发 Vue 重渲染 + marked 重新解析(O(n²) 问题)
-    let contentBuf = ''
-    let flushTimer = null
-    const flush = () => {
-      flushTimer = null
-      messages.value[aiIdx].content = contentBuf
-      scrollToBottom()
-    }
 
     for await (const chunk of gen) {
       if (waitingFirst.value) waitingFirst.value = false
