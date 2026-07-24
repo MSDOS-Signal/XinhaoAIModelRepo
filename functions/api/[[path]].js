@@ -54,48 +54,32 @@ export async function onRequest(context) {
     'Accept': request.headers.get('Accept') || '*/*',
   }
 
-  // 判断是否为流式请求(SSE)
-  const isSSE = path.includes('chat/completions')
-
   try {
-    // 转发请求,禁用 Cloudflare 缓存以避免 SSE 被缓冲
+    // 转发请求 — cache: no-store 确保不缓存流式响应
     const proxyRes = await fetch(url, {
       method: request.method,
       headers: reqHeaders,
       body: request.method !== 'GET' && request.method !== 'HEAD' ? request.body : undefined,
-      cf: { cacheTtl: -1, cacheEverything: false },
+      cache: 'no-store',
     })
 
     // 构建响应头
     const resHeaders = new Headers(proxyRes.headers)
-    // 移除会导致问题的头
     resHeaders.delete('Content-Encoding')
     resHeaders.delete('Content-Length')
     resHeaders.delete('Transfer-Encoding')
 
-    // SSE 流式响应:确保不被 CDN/代理缓冲
-    if (isSSE) {
-      resHeaders.set('Content-Type', 'text/event-stream; charset=utf-8')
-      resHeaders.set('Cache-Control', 'no-cache, no-transform')
-      resHeaders.set('X-Accel-Buffering', 'no')
-    }
+    // 关键:确保流式响应不被缓冲
+    resHeaders.set('Cache-Control', 'no-cache, no-transform')
+    resHeaders.set('X-Accel-Buffering', 'no')
 
     // 加上 CORS 头
     for (const [k, v] of Object.entries(CORS_HEADERS)) {
       resHeaders.set(k, v)
     }
 
-    // 流式响应:用 TransformStream 确保每个 chunk 立即透传,不被缓冲
-    if (isSSE && proxyRes.body) {
-      const { readable, writable } = new TransformStream()
-      proxyRes.body.pipeTo(writable)
-      return new Response(readable, {
-        status: proxyRes.status,
-        headers: resHeaders,
-      })
-    }
-
-    // 非流式响应直接透传
+    // 直接透传 body — 不用 TransformStream 包装
+    // Cloudflare Workers 原生支持 ReadableStream 透传,会自动流式推送
     return new Response(proxyRes.body, {
       status: proxyRes.status,
       headers: resHeaders,

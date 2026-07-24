@@ -437,7 +437,7 @@ async function send() {
       signal: abortCtrl.signal
     })
 
-    // 节流更新:缓冲 chunk,每 60ms 刷新一次 UI
+    // 节流更新:缓冲 chunk,每 30ms 刷新一次 UI
     // 避免每个 token 都触发 Vue 重渲染 + marked 重新解析(O(n²) 问题)
     let contentBuf = ''
     let flushTimer = null
@@ -451,7 +451,7 @@ async function send() {
       if (waitingFirst.value) waitingFirst.value = false
       contentBuf += chunk
       if (!flushTimer) {
-        flushTimer = setTimeout(flush, 60)
+        flushTimer = setTimeout(flush, 30)
       }
     }
 
