@@ -1,18 +1,22 @@
 /* ============================================================
  * 星皓 XINHAO · NVIDIA NIM API 客户端
- * 端点:https://integrate.api.nvidia.com/v1(OpenAI 兼容)
- * 开发环境走 Vite 代理 /nvapi 规避跨域,生产环境直连(NVIDIA 已开放 CORS)
+ *
+ * 开发环境:Vite 代理 /nvapi -> https://integrate.api.nvidia.com/v1
+ *   (Vite 代理在服务端注入 API Key,前端不接触密钥)
+ * 生产环境:Cloudflare Pages Function /api -> 服务端注入 API Key
+ *   (Function 在服务端注入 API Key,前端不接触密钥)
+ *
+ * API Key 永远不暴露在前端代码中
  * ============================================================ */
 
-export const API_KEY = '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'
-
+// API 基础路径
 export const API_BASE = import.meta.env.DEV
-  ? '/nvapi'
-  : 'https://integrate.api.nvidia.com/v1'
+  ? '/nvapi'                    // 开发:Vite 代理(代理注入 Key)
+  : '/api'                      // 生产:Cloudflare Function(Function 注入 Key)
 
+// 请求头:前端永远不传 Authorization
 const headers = () => ({
-  'Content-Type': 'application/json',
-  Authorization: `Bearer ${API_KEY}`
+  'Content-Type': 'application/json'
 })
 
 /** 拉取线上模型 ID 列表 */
